@@ -49,6 +49,21 @@ function makeRes(body, status = 200, headers = {}) {
 	return new Response(body, { status, headers }) // 返回新构造的响应
 }
 
+/**
+ * 构造新的URL对象
+ * @param {string} urlStr URL字符串
+ * @param {string} base URL base
+ */
+function newUrl(urlStr, base) {
+	try {
+		console.log(`Constructing new URL object with path ${urlStr} and base ${base}`);
+		return new URL(urlStr, base); // 尝试构造新的URL对象
+	} catch (err) {
+		console.error(err);
+		return null // 构造失败返回null
+	}
+}
+
 async function nginx() {
 	const text = `
 	<!DOCTYPE html>
@@ -396,12 +411,12 @@ async function searchInterface() {
 	return html;
 }
 
-// 判断是否为 Docker Hub Web API 请求
-function isHubWebRequest(pathname, userAgent) {
+// 判断是否为 Docker Hub Web 请求
+function isDockerHubWebRequest(pathname, userAgent) {
 	// Docker Hub Web API 路径
 	const hubWebPaths = [
 		'/v1/search',
-		'/v1/repositories',
+		'/v1/repositories', 
 		'/v2/repositories',
 		'/v2/namespaces',
 		'/v2/users',
@@ -412,11 +427,13 @@ function isHubWebRequest(pathname, userAgent) {
 		'/orgs/'
 	];
 	
-	// 浏览器 User-Agent 或者是 Hub API 路径
+	// 浏览器请求
 	const isBrowser = userAgent && userAgent.includes('mozilla');
-	const isHubPath = hubWebPaths.some(path => pathname.startsWith(path));
 	
-	return isBrowser || isHubPath;
+	// Hub API 路径
+	const isHubApiPath = hubWebPaths.some(path => pathname.startsWith(path));
+	
+	return isBrowser || isHubApiPath;
 }
 
 export default {
@@ -459,9 +476,9 @@ export default {
 			});
 		}
 		
-		// 判断是否为 Hub Web 请求（浏览器访问或 Hub API）
-		if (isHubWebRequest(url.pathname, userAgent)) {
-			console.log(`Hub Web request detected: ${url.pathname}`);
+		// 关键修改：先判断请求类型，再设置目标主机
+		if (isDockerHubWebRequest(url.pathname, userAgent)) {
+			console.log(`Docker Hub Web request detected: ${url.pathname}`);
 			
 			if (url.pathname == '/') {
 				if (env.URL302) {
@@ -596,7 +613,6 @@ export default {
 		return response;
 	}
 };
-
 async function ADD(envadd) {
 	var addtext = envadd.replace(/[	 |"'\r\n]+/g, ',').replace(/,+/g, ',');	// 将空格、双引号、单引号和换行符替换为逗号
 	if (addtext.charAt(0) == ',') addtext = addtext.slice(1);
