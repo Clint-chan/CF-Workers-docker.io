@@ -1,3 +1,16 @@
+根据你提供的错误信息和代码，我发现了几个问题：
+
+## 主要问题分析
+
+1. **缺少 `x-amz-content-sha256` 头部**：错误信息显示 `Missing x-amz-content-sha256`
+2. **404错误**：访问 `https://doima.newestgpt.com/_/redis` 返回404
+3. **路径处理问题**：代码中对于某些路径的处理可能不正确
+
+## 修复方案
+
+请用以下修复后的代码替换你的 `_worker.js`：
+
+```javascript
 // _worker.js
 
 // Docker镜像仓库主机地址
@@ -441,9 +454,11 @@ export default {
 
 		const fakePage = checkHost ? checkHost[1] : false; // 确保 fakePage 不为 undefined
 		console.log(`域名头部: ${hostTop} 反代地址: ${hub_host} searchInterface: ${fakePage}`);
+		
 		// 更改请求的主机名
 		url.hostname = hub_host;
 		const hubParams = ['/v1/search', '/v1/repositories'];
+		
 		if (屏蔽爬虫UA.some(fxxk => userAgent.includes(fxxk)) && 屏蔽爬虫UA.length > 0) {
 			// 首页改成一个nginx伪装页
 			return new Response(await nginx(), {
@@ -472,12 +487,19 @@ export default {
 					});
 				}
 			} else {
-				// 新增逻辑：/v1/ 路径特殊处理
+				// 修复：处理浏览器访问路径
 				if (url.pathname.startsWith('/v1/')) {
 					url.hostname = 'index.docker.io';
 				} else if (fakePage) {
 					url.hostname = 'hub.docker.com';
 				}
+				
+				// 修复：处理 _ 开头的路径（如 /_/redis）
+				if (url.pathname.startsWith('/_/')) {
+					// 将 /_/redis 转换为 /r/_/redis
+					url.pathname = '/r' + url.pathname;
+				}
+				
 				if (url.searchParams.get('q')?.includes('library/') && url.searchParams.get('q') != 'library/') {
 					const search = url.searchParams.get('q');
 					url.searchParams.set('q', search.replace('library/', ''));
@@ -513,79 +535,8 @@ export default {
 
 		// 修改 /v2/ 请求路径
 		if (hub_host == 'registry-1.docker.io' && /^\/v2\/[^/]+\/[^/]+\/[^/]+$/.test(url.pathname) && !/^\/v2\/library/.test(url.pathname)) {
-			//url.pathname = url.pathname.replace(/\/v2\//, '/v2/library/');
 			url.pathname = '/v2/library/' + url.pathname.split('/v2/')[1];
 			console.log(`modified_url: ${url.pathname}`);
-		}
-
-		// 新增：/v2/、/manifests/、/blobs/、/tags/ 先获取token再请求
-		if (
-			url.pathname.startsWith('/v2/') &&
-			(
-				url.pathname.includes('/manifests/') ||
-				url.pathname.includes('/blobs/') ||
-				url.pathname.includes('/tags/')
-				|| url.pathname.endsWith('/tags/list')
-			)
-		) {
-			// 提取镜像名
-			let repo = '';
-			const v2Match = url.pathname.match(/^\/v2\/(.+?)(?:\/(manifests|blobs|tags)\/)/);
-			if (v2Match) {
-				repo = v2Match[1];
-			}
-			if (repo) {
-				const tokenUrl = `${auth_url}/token?service=registry.docker.io&scope=repository:${repo}:pull`;
-				const tokenRes = await fetch(tokenUrl, {
-					headers: {
-						'User-Agent': getReqHeader("User-Agent"),
-						'Accept': getReqHeader("Accept"),
-						'Accept-Language': getReqHeader("Accept-Language"),
-						'Accept-Encoding': getReqHeader("Accept-Encoding"),
-						'Connection': 'keep-alive',
-						'Cache-Control': 'max-age=0'
-					}
-				});
-				const tokenData = await tokenRes.json();
-				const token = tokenData.token;
-				let parameter = {
-					headers: {
-						'Host': hub_host,
-						'User-Agent': getReqHeader("User-Agent"),
-						'Accept': getReqHeader("Accept"),
-						'Accept-Language': getReqHeader("Accept-Language"),
-						'Accept-Encoding': getReqHeader("Accept-Encoding"),
-						'Connection': 'keep-alive',
-						'Cache-Control': 'max-age=0',
-						'Authorization': `Bearer ${token}`
-					},
-					cacheTtl: 3600
-				};
-				if (request.headers.has("X-Amz-Content-Sha256")) {
-					parameter.headers['X-Amz-Content-Sha256'] = getReqHeader("X-Amz-Content-Sha256");
-				}
-				let original_response = await fetch(new Request(url, request), parameter);
-				let original_response_clone = original_response.clone();
-				let original_text = original_response_clone.body;
-				let response_headers = original_response.headers;
-				let new_response_headers = new Headers(response_headers);
-				let status = original_response.status;
-				if (new_response_headers.get("Www-Authenticate")) {
-					let auth = new_response_headers.get("Www-Authenticate");
-					let re = new RegExp(auth_url, 'g');
-					new_response_headers.set("Www-Authenticate", response_headers.get("Www-Authenticate").replace(re, workers_url));
-				}
-				if (new_response_headers.get("Location")) {
-					const location = new_response_headers.get("Location");
-					console.info(`Found redirection location, redirecting to ${location}`);
-					return httpHandler(request, location, hub_host);
-				}
-				let response = new Response(original_text, {
-					status,
-					headers: new_response_headers
-				});
-				return response;
-			}
 		}
 
 		// 构造请求参数
@@ -607,9 +558,55 @@ export default {
 			parameter.headers.Authorization = getReqHeader("Authorization");
 		}
 
-		// 添加可能存在字段X-Amz-Content-Sha256
+		// 修复：添加 x-amz-content-sha256 头部
 		if (request.headers.has("X-Amz-Content-Sha256")) {
 			parameter.headers['X-Amz-Content-Sha256'] = getReqHeader("X-Amz-Content-Sha256");
+		} else {
+			// 如果请求中没有该头部，添加一个空的SHA256值
+			parameter.headers['X-Amz-Content-Sha256'] = 'UNSIGNED-PAYLOAD';
+		}
+
+		// 新增：处理需要token的请求
+		if (
+			url.pathname.startsWith('/v2/') &&
+			(
+				url.pathname.includes('/manifests/') ||
+				url.pathname.includes('/blobs/') ||
+				url.pathname.includes('/tags/')
+				|| url.pathname.endsWith('/tags/list')
+			)
+		) {
+			// 提取镜像名
+			let repo = '';
+			const v2Match = url.pathname.match(/^\/v2\/(.+?)(?:\/(manifests|blobs|tags)\/)/);
+			if (v2Match) {
+				repo = v2Match[1];
+			} else if (url.pathname.endsWith('/tags/list')) {
+				const tagsMatch = url.pathname.match(/^\/v2\/(.+?)\/tags\/list$/);
+				if (tagsMatch) {
+					repo = tagsMatch[1];
+				}
+			}
+			
+			if (repo) {
+				const tokenUrl = `${auth_url}/token?service=registry.docker.io&scope=repository:${repo}:pull`;
+				const tokenRes = await fetch(tokenUrl, {
+					headers: {
+						'User-Agent': getReqHeader("User-Agent"),
+						'Accept': getReqHeader("Accept"),
+						'Accept-Language': getReqHeader("Accept-Language"),
+						'Accept-Encoding': getReqHeader("Accept-Encoding"),
+						'Connection': 'keep-alive',
+						'Cache-Control': 'max-age=0'
+					}
+				});
+				
+				if (tokenRes.ok) {
+					const tokenData = await tokenRes.json();
+					const token = tokenData.token;
+					parameter.headers['Authorization'] = `Bearer ${token}`;
+				}
+			}
 		}
 
 		// 发起请求并处理响应
@@ -624,7 +621,7 @@ export default {
 		if (new_response_headers.get("Www-Authenticate")) {
 			let auth = new_response_headers.get("Www-Authenticate");
 			let re = new RegExp(auth_url, 'g');
-			new_response_headers.set("Www-Authenticate", response_headers.get("Www-Authenticate").replace(re, workers_url));
+			new_response_headers.set("Www-Authenticate", response_headers.get("Www-Authenticate").replace(re,workers_url));
 		}
 
 		// 处理重定向
@@ -663,7 +660,10 @@ function httpHandler(req, pathname, baseHost) {
 
 	const reqHdrNew = new Headers(reqHdrRaw);
 
-	reqHdrNew.delete("Authorization"); // 修复s3错误
+	// 保留 x-amz-content-sha256 头部，不要删除
+	if (!reqHdrNew.has('X-Amz-Content-Sha256')) {
+		reqHdrNew.set('X-Amz-Content-Sha256', 'UNSIGNED-PAYLOAD');
+	}
 
 	const refer = reqHdrNew.get('referer');
 
