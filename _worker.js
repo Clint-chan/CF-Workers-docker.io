@@ -1,16 +1,3 @@
-根据你提供的错误信息和代码，我发现了几个问题：
-
-## 主要问题分析
-
-1. **缺少 `x-amz-content-sha256` 头部**：错误信息显示 `Missing x-amz-content-sha256`
-2. **404错误**：访问 `https://doima.newestgpt.com/_/redis` 返回404
-3. **路径处理问题**：代码中对于某些路径的处理可能不正确
-
-## 修复方案
-
-请用以下修复后的代码替换你的 `_worker.js`：
-
-```javascript
 // _worker.js
 
 // Docker镜像仓库主机地址
