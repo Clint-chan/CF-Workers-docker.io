@@ -49,21 +49,6 @@ function makeRes(body, status = 200, headers = {}) {
 	return new Response(body, { status, headers }) // 返回新构造的响应
 }
 
-/**
- * 构造新的URL对象
- * @param {string} urlStr URL字符串
- * @param {string} base URL base
- */
-function newUrl(urlStr, base) {
-	try {
-		console.log(`Constructing new URL object with path ${urlStr} and base ${base}`);
-		return new URL(urlStr, base); // 尝试构造新的URL对象
-	} catch (err) {
-		console.error(err);
-		return null // 构造失败返回null
-	}
-}
-
 async function nginx() {
 	const text = `
 	<!DOCTYPE html>
@@ -412,7 +397,15 @@ async function searchInterface() {
 }
 
 // 判断是否为 Docker Hub Web 请求
-function isDockerHubWebRequest(pathname, userAgent) {
+function isDockerHubWebRequest(request) {
+	const pathname = new URL(request.url).pathname;
+	const userAgent = request.headers.get('User-Agent')?.toLowerCase() || '';
+	
+	// 检查特殊的请求头，这些是 Docker Hub Web UI 发送的
+	const dockerApiClient = request.headers.get('x-docker-api-client');
+	const dockerSessionId = request.headers.get('x-docker-session-id');
+	const acceptJson = request.headers.get('accept')?.includes('application/json');
+	
 	// Docker Hub Web API 路径
 	const hubWebPaths = [
 		'/v1/search',
@@ -428,12 +421,49 @@ function isDockerHubWebRequest(pathname, userAgent) {
 	];
 	
 	// 浏览器请求
-	const isBrowser = userAgent && userAgent.includes('mozilla');
+	const isBrowser = userAgent.includes('mozilla');
 	
 	// Hub API 路径
 	const isHubApiPath = hubWebPaths.some(path => pathname.startsWith(path));
 	
-	return isBrowser || isHubApiPath;
+	// Docker Hub Web UI 的 AJAX 请求特征
+	const isHubAjax = dockerApiClient || dockerSessionId || (acceptJson && isHubApiPath);
+	
+	console.log(`Request analysis:
+		Path: ${pathname}
+		User-Agent: ${userAgent}
+		Docker-API-Client: ${dockerApiClient}
+		Docker-Session-ID: ${dockerSessionId}
+		Accept JSON: ${acceptJson}
+		Is Hub API Path: ${isHubApiPath}
+		Is Browser: ${isBrowser}
+		Is Hub AJAX: ${isHubAjax}
+		Final decision: ${isBrowser || isHubAjax}`);
+	
+	return isBrowser || isHubAjax;
+}
+
+// 判断是否为 Docker Registry API 请求
+function isDockerRegistryRequest(pathname) {
+	// Docker Registry API 的特征路径
+	const registryPaths = [
+		'/v2/', // 但不包括 /v2/repositories, /v2/namespaces 等
+	];
+	
+	// 排除 Hub API 路径
+	const hubApiPaths = [
+		'/v2/repositories',
+		'/v2/namespaces',
+		'/v2/users'
+	];
+	
+	// 如果是 Hub API 路径，则不是 Registry API
+	if (hubApiPaths.some(path => pathname.startsWith(path))) {
+		return false;
+	}
+	
+	// 检查是否为 Registry API 路径
+	return registryPaths.some(path => pathname.startsWith(path));
 }
 
 export default {
@@ -476,8 +506,8 @@ export default {
 			});
 		}
 		
-		// 关键修改：先判断请求类型，再设置目标主机
-		if (isDockerHubWebRequest(url.pathname, userAgent)) {
+		// 关键修改：使用更精确的判断逻辑
+		if (isDockerHubWebRequest(request)) {
 			console.log(`Docker Hub Web request detected: ${url.pathname}`);
 			
 			if (url.pathname == '/') {
@@ -613,6 +643,7 @@ export default {
 		return response;
 	}
 };
+
 async function ADD(envadd) {
 	var addtext = envadd.replace(/[	 |"'\r\n]+/g, ',').replace(/,+/g, ',');	// 将空格、双引号、单引号和换行符替换为逗号
 	if (addtext.charAt(0) == ',') addtext = addtext.slice(1);
@@ -620,3 +651,4 @@ async function ADD(envadd) {
 	const add = addtext.split(',');
 	return add;
 }
+
