@@ -396,6 +396,29 @@ async function searchInterface() {
 	return html;
 }
 
+// 判断是否为 Docker Hub Web API 请求
+function isHubWebRequest(pathname, userAgent) {
+	// Docker Hub Web API 路径
+	const hubWebPaths = [
+		'/v1/search',
+		'/v1/repositories',
+		'/v2/repositories',
+		'/v2/namespaces',
+		'/v2/users',
+		'/search',
+		'/_/',
+		'/r/',
+		'/u/',
+		'/orgs/'
+	];
+	
+	// 浏览器 User-Agent 或者是 Hub API 路径
+	const isBrowser = userAgent && userAgent.includes('mozilla');
+	const isHubPath = hubWebPaths.some(path => pathname.startsWith(path));
+	
+	return isBrowser || isHubPath;
+}
+
 export default {
 	async fetch(request, env, ctx) {
 		const getReqHeader = (key) => request.headers.get(key); // 获取请求头
@@ -427,24 +450,24 @@ export default {
 		const fakePage = checkHost ? checkHost[1] : false; // 确保 fakePage 不为 undefined
 		console.log(`域名头部: ${hostTop} 反代地址: ${hub_host} searchInterface: ${fakePage}`);
 		
-		// 更改请求的主机名
-		url.hostname = hub_host;
-		
-		const hubParams = ['/v1/search', '/v1/repositories'];
+		// 屏蔽爬虫
 		if (屏蔽爬虫UA.some(fxxk => userAgent.includes(fxxk)) && 屏蔽爬虫UA.length > 0) {
-			// 首页改成一个nginx伪装页
 			return new Response(await nginx(), {
 				headers: {
 					'Content-Type': 'text/html; charset=UTF-8',
 				},
 			});
-		} else if ((userAgent && userAgent.includes('mozilla')) || hubParams.some(param => url.pathname.includes(param))) {
+		}
+		
+		// 判断是否为 Hub Web 请求（浏览器访问或 Hub API）
+		if (isHubWebRequest(url.pathname, userAgent)) {
+			console.log(`Hub Web request detected: ${url.pathname}`);
+			
 			if (url.pathname == '/') {
 				if (env.URL302) {
 					return Response.redirect(env.URL302, 302);
 				} else if (env.URL) {
 					if (env.URL.toLowerCase() == 'nginx') {
-						//首页改成一个nginx伪装页
 						return new Response(await nginx(), {
 							headers: {
 								'Content-Type': 'text/html; charset=UTF-8',
@@ -459,25 +482,35 @@ export default {
 					});
 				}
 			} else {
-				// 修复路径处理：/_/ 开头的路径转换为 /r/
+				// 处理 Hub Web 请求
+				// 修复路径处理：处理 /_/ 开头的路径
 				if (url.pathname.startsWith('/_/')) {
-					url.pathname = url.pathname.replace('/_/', '/r/');
+					// /_/redis -> /r/redis
+					url.pathname = '/r/' + url.pathname.substring(3);
 				}
 				
-				// 新增逻辑：/v1/ 路径特殊处理
+				// 设置正确的目标主机
 				if (url.pathname.startsWith('/v1/')) {
 					url.hostname = 'index.docker.io';
-				} else if (fakePage) {
+				} else {
 					url.hostname = 'hub.docker.com';
 				}
+				
+				// 处理搜索参数
 				if (url.searchParams.get('q')?.includes('library/') && url.searchParams.get('q') != 'library/') {
 					const search = url.searchParams.get('q');
 					url.searchParams.set('q', search.replace('library/', ''));
 				}
+				
+				console.log(`Proxying Hub Web request to: ${url.toString()}`);
 				const newRequest = new Request(url, request);
 				return fetch(newRequest);
 			}
 		}
+
+		// 处理 Docker Registry API 请求
+		console.log(`Docker Registry API request detected: ${url.pathname}`);
+		url.hostname = hub_host;
 
 		// 修改包含 %2F 和 %3A 的请求
 		if (!/%2F/.test(url.search) && /%3A/.test(url.toString())) {
@@ -505,7 +538,6 @@ export default {
 
 		// 修改 /v2/ 请求路径
 		if (hub_host == 'registry-1.docker.io' && /^\/v2\/[^/]+\/[^/]+\/[^/]+$/.test(url.pathname) && !/^\/v2\/library/.test(url.pathname)) {
-			//url.pathname = url.pathname.replace(/\/v2\//, '/v2/library/');
 			url.pathname = '/v2/library/' + url.pathname.split('/v2/')[1];
 			console.log(`modified_url: ${url.pathname}`);
 		}
@@ -521,8 +553,8 @@ export default {
 				'Connection': 'keep-alive',
 				'Cache-Control': 'max-age=0'
 			},
-			cacheTtl: 3600, // 缓存时间
-			redirect: 'manual' // 关键修改：不自动跟随重定向
+			cacheTtl: 3600,
+			redirect: 'manual' // 关键：不自动跟随重定向
 		};
 
 		// 添加Authorization头
@@ -530,11 +562,15 @@ export default {
 			parameter.headers.Authorization = getReqHeader("Authorization");
 		}
 
+		console.log(`Docker API request to: ${url.toString()}`);
+
 		// 发起请求并处理响应
 		let original_response = await fetch(new Request(url, request), parameter);
 		let response_headers = original_response.headers;
 		let new_response_headers = new Headers(response_headers);
 		let status = original_response.status;
+
+		console.log(`Response status: ${status}`);
 
 		// 修改 Www-Authenticate 头
 		if (new_response_headers.get("Www-Authenticate")) {
@@ -543,9 +579,9 @@ export default {
 			new_response_headers.set("Www-Authenticate", response_headers.get("Www-Authenticate").replace(re, workers_url));
 		}
 
-		// 关键修改：对于重定向响应，直接返回给客户端，不要拦截
-		if (status >= 300 && status < 400 && new_response_headers.get("Location")) {
-			console.log(`Returning redirect status ${status} to client`);
+		// 对于重定向响应，直接返回给客户端，让 Docker 客户端自己处理
+		if (status >= 300 && status < 400) {
+			console.log(`Returning redirect ${status} to Docker client`);
 			return new Response(null, {
 				status,
 				headers: new_response_headers
