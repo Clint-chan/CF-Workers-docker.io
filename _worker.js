@@ -1,28 +1,6 @@
 // _worker.js
 
-// Docker镜像仓库主机地址
-let hub_host = 'registry-1.docker.io';
-// Docker认证服务器地址
-const auth_url = 'https://auth.docker.io';
-
 let 屏蔽爬虫UA = ['netcraft'];
-
-// 根据主机名选择对应的上游地址
-function routeByHosts(host) {
-	const routes = {
-		"quay": "quay.io",
-		"gcr": "gcr.io",
-		"k8s-gcr": "k8s.gcr.io",
-		"k8s": "registry.k8s.io",
-		"ghcr": "ghcr.io",
-		"cloudsmith": "docker.cloudsmith.io",
-		"nvcr": "nvcr.io",
-		"test": "registry-1.docker.io",
-	};
-
-	if (host in routes) return [routes[host], false];
-	else return [hub_host, true];
-}
 
 async function nginx() {
 	return `<!DOCTYPE html>
@@ -74,38 +52,6 @@ async function searchInterface() {
 	</html>`;
 }
 
-// 简单直接的路由函数
-function getTargetHost(pathname) {
-	// Docker Hub Web UI 路径 -> hub.docker.com
-	const hubPaths = [
-		'/v2/repositories',
-		'/v2/namespaces', 
-		'/v2/users',
-		'/v1/search',
-		'/v1/repositories',
-		'/search',
-		'/_/',
-		'/r/',
-		'/u/',
-		'/orgs/'
-	];
-	
-	// 检查是否为 Hub 路径
-	for (const path of hubPaths) {
-		if (pathname.startsWith(path)) {
-			return 'hub.docker.com';
-		}
-	}
-	
-	// /v1/ 路径 -> index.docker.io
-	if (pathname.startsWith('/v1/')) {
-		return 'index.docker.io';
-	}
-	
-	// 其他所有路径（包括 /v2/ Registry API）-> registry-1.docker.io
-	return 'registry-1.docker.io';
-}
-
 export default {
 	async fetch(request, env, ctx) {
 		const getReqHeader = (key) => request.headers.get(key);
@@ -113,27 +59,8 @@ export default {
 		const userAgentHeader = request.headers.get('User-Agent');
 		const userAgent = userAgentHeader ? userAgentHeader.toLowerCase() : "null";
 		if (env.UA) 屏蔽爬虫UA = 屏蔽爬虫UA.concat(await ADD(env.UA));
-		const workers_url = `https://${url.hostname}`;
 
-		// 获取请求参数中的 ns
-		const ns = url.searchParams.get('ns');
-		const hostname = url.searchParams.get('hubhost') || url.hostname;
-		const hostTop = hostname.split('.')[0];
-
-		let checkHost;
-		if (ns) {
-			if (ns === 'docker.io') {
-				hub_host = 'registry-1.docker.io';
-			} else {
-				hub_host = ns;
-			}
-		} else {
-			checkHost = routeByHosts(hostTop);
-			hub_host = checkHost[0];
-		}
-
-		const fakePage = checkHost ? checkHost[1] : false;
-		console.log(`请求路径: ${url.pathname}`);
+		console.log(`收到请求: ${request.method} ${url.pathname}${url.search}`);
 		
 		// 屏蔽爬虫
 		if (屏蔽爬虫UA.some(fxxk => userAgent.includes(fxxk)) && 屏蔽爬虫UA.length > 0) {
@@ -154,121 +81,126 @@ export default {
 				} else {
 					return fetch(new Request(env.URL, request));
 				}
-			} else if (fakePage) {
+			} else {
 				return new Response(await searchInterface(), {
 					headers: { 'Content-Type': 'text/html; charset=UTF-8' }
 				});
 			}
 		}
 
-		// 关键：根据路径直接确定目标主机
-		const targetHost = getTargetHost(url.pathname);
-		url.hostname = targetHost;
-		
-		console.log(`路径 ${url.pathname} -> 目标主机 ${targetHost}`);
+		// 简单粗暴的路由规则
+		let targetHost;
+		let targetUrl;
 
-		// 处理 /_/ 路径
-		if (url.pathname.startsWith('/_/')) {
-			url.pathname = '/r/' + url.pathname.substring(3);
-			console.log(`路径转换: /_/ -> /r/, 新路径: ${url.pathname}`);
-		}
-
-		// 如果是 Hub 请求，直接转发
-		if (targetHost === 'hub.docker.com' || targetHost === 'index.docker.io') {
-			// 处理搜索参数
-			if (url.searchParams.get('q')?.includes('library/') && url.searchParams.get('q') !== 'library/') {
-				const search = url.searchParams.get('q');
-				url.searchParams.set('q', search.replace('library/', ''));
+		// Docker Hub Web API 路径
+		if (url.pathname.startsWith('/v2/namespaces/') || 
+			url.pathname.startsWith('/v2/repositories/') || 
+			url.pathname.startsWith('/v2/users/') ||
+			url.pathname.startsWith('/v1/search') ||
+			url.pathname.startsWith('/v1/repositories') ||
+			url.pathname.startsWith('/search') ||
+			url.pathname.startsWith('/_/') ||
+			url.pathname.startsWith('/r/') ||
+			url.pathname.startsWith('/u/') ||
+			url.pathname.startsWith('/orgs/')) {
+			
+			targetHost = 'hub.docker.com';
+			
+			// 处理 /_/ 路径转换
+			if (url.pathname.startsWith('/_/')) {
+				url.pathname = '/r/' + url.pathname.substring(3);
 			}
 			
-			console.log(`转发 Hub 请求到: ${url.toString()}`);
-			return fetch(new Request(url, request));
+			targetUrl = `https://${targetHost}${url.pathname}${url.search}`;
+			console.log(`Hub Web 请求 -> ${targetUrl}`);
+			
+		} else if (url.pathname.startsWith('/v1/')) {
+			targetHost = 'index.docker.io';
+			targetUrl = `https://${targetHost}${url.pathname}${url.search}`;
+			console.log(`Index 请求 -> ${targetUrl}`);
+			
+		} else if (url.pathname.includes('/token')) {
+			// Token 请求
+			targetHost = 'auth.docker.io';
+			targetUrl = `https://${targetHost}${url.pathname}${url.search}`;
+			console.log(`Token 请求 -> ${targetUrl}`);
+			
+		} else {
+			// Docker Registry API
+			targetHost = 'registry-1.docker.io';
+			
+			// 修改 /v2/ 请求路径，添加 library/ 前缀
+			if (targetHost === 'registry-1.docker.io' && 
+				/^\/v2\/[^/]+\/[^/]+\/[^/]+$/.test(url.pathname) && 
+				!/^\/v2\/library/.test(url.pathname)) {
+				url.pathname = '/v2/library/' + url.pathname.split('/v2/')[1];
+				console.log(`Registry 路径修改: ${url.pathname}`);
+			}
+			
+			targetUrl = `https://${targetHost}${url.pathname}${url.search}`;
+			console.log(`Registry API 请求 -> ${targetUrl}`);
 		}
 
-		// 以下是 Docker Registry API 处理逻辑
-		console.log(`处理 Registry API 请求: ${url.pathname}`);
+		// 构建新的请求
+		const newRequest = new Request(targetUrl, {
+			method: request.method,
+			headers: request.headers,
+			body: request.body,
+			redirect: 'manual' // 重要：不自动跟随重定向
+		});
 
-		// 修改包含 %2F 和 %3A 的请求
-		if (!/%2F/.test(url.search) && /%3A/.test(url.toString())) {
-			let modifiedUrl = url.toString().replace(/%3A(?=.*?&)/, '%3Alibrary%2F');
-			url = new URL(modifiedUrl);
-			console.log(`URL 修改: ${url}`);
-		}
+		// 修改 Host 头
+		const newHeaders = new Headers(newRequest.headers);
+		newHeaders.set('Host', targetHost);
 
-		// 处理 token 请求
-		if (url.pathname.includes('/token')) {
-			let token_parameter = {
+		const finalRequest = new Request(targetUrl, {
+			method: request.method,
+			headers: newHeaders,
+			body: request.body,
+			redirect: 'manual'
+		});
+
+		console.log(`发送请求到: ${targetUrl}`);
+		console.log(`Host 头: ${targetHost}`);
+
+		try {
+			// 直接获取响应
+			const response = await fetch(finalRequest);
+			console.log(`响应状态: ${response.status}`);
+
+			// 创建新的响应头
+			const responseHeaders = new Headers(response.headers);
+			
+			// 添加 CORS 头
+			responseHeaders.set('Access-Control-Allow-Origin', '*');
+			responseHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+			responseHeaders.set('Access-Control-Allow-Headers', '*');
+
+			// 如果是重定向，直接返回给客户端
+			if (response.status >= 300 && response.status < 400) {
+				console.log(`返回重定向 ${response.status} 给客户端`);
+				return new Response(null, {
+					status: response.status,
+					headers: responseHeaders
+				});
+			}
+
+			// 返回响应
+			return new Response(response.body, {
+				status: response.status,
+				headers: responseHeaders
+			});
+
+		} catch (error) {
+			console.error(`请求失败: ${error.message}`);
+			return new Response(`代理请求失败: ${error.message}`, {
+				status: 500,
 				headers: {
-					'Host': 'auth.docker.io',
-					'User-Agent': getReqHeader("User-Agent"),
-					'Accept': getReqHeader("Accept"),
-					'Accept-Language': getReqHeader("Accept-Language"),
-					'Accept-Encoding': getReqHeader("Accept-Encoding"),
-					'Connection': 'keep-alive',
-					'Cache-Control': 'max-age=0'
+					'Content-Type': 'text/plain; charset=utf-8',
+					'Access-Control-Allow-Origin': '*'
 				}
-			};
-			let token_url = auth_url + url.pathname + url.search;
-			return fetch(new Request(token_url, request), token_parameter);
-		}
-
-		// 修改 /v2/ 请求路径
-		if (targetHost === 'registry-1.docker.io' && /^\/v2\/[^/]+\/[^/]+\/[^/]+$/.test(url.pathname) && !/^\/v2\/library/.test(url.pathname)) {
-			url.pathname = '/v2/library/' + url.pathname.split('/v2/')[1];
-			console.log(`Registry 路径修改: ${url.pathname}`);
-		}
-
-		// 构造请求参数
-		let parameter = {
-			headers: {
-				'Host': targetHost,
-				'User-Agent': getReqHeader("User-Agent"),
-				'Accept': getReqHeader("Accept"),
-				'Accept-Language': getReqHeader("Accept-Language"),
-				'Accept-Encoding': getReqHeader("Accept-Encoding"),
-				'Connection': 'keep-alive',
-				'Cache-Control': 'max-age=0'
-			},
-			cacheTtl: 3600,
-			redirect: 'manual' // 不自动跟随重定向
-		};
-
-		// 添加 Authorization 头
-		if (request.headers.has("Authorization")) {
-			parameter.headers.Authorization = getReqHeader("Authorization");
-		}
-
-		console.log(`发送请求到: ${url.toString()}`);
-
-		// 发起请求并处理响应
-		let original_response = await fetch(new Request(url, request), parameter);
-		let response_headers = original_response.headers;
-		let new_response_headers = new Headers(response_headers);
-		let status = original_response.status;
-
-		console.log(`响应状态: ${status}`);
-
-		// 修改 Www-Authenticate 头
-		if (new_response_headers.get("Www-Authenticate")) {
-			let auth = new_response_headers.get("Www-Authenticate");
-			let re = new RegExp(auth_url, 'g');
-			new_response_headers.set("Www-Authenticate", response_headers.get("Www-Authenticate").replace(re, workers_url));
-		}
-
-		// 对于重定向响应，直接返回给客户端
-		if (status >= 300 && status < 400) {
-			console.log(`返回重定向 ${status} 给客户端`);
-			return new Response(null, {
-				status,
-				headers: new_response_headers
 			});
 		}
-
-		// 返回修改后的响应
-		return new Response(original_response.body, {
-			status,
-			headers: new_response_headers
-		});
 	}
 };
 
